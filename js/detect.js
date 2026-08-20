@@ -16,7 +16,7 @@
 //    真的看得到邊緣——這個數字同時拿來選候選框**和**當信心度，
 //    所以框錯的時候信心度會自己掉下來，不會再出現「0.99 但偏 200px」。
 
-import { CARD_ASPECT, refineQuad, defaultQuad, autoDetectQuad } from './imageutil.js';
+import { CARD_ASPECT, refineQuad, defaultQuad, autoDetectQuad, median } from './imageutil.js';
 
 const WORK_W = 400;        // 搜尋用的工作解析度
 const THETA_BINS = 180;    // Hough 角度解析度（1 度）
@@ -513,23 +513,48 @@ export function detectCardQuad(srcCanvas, opts) {
   let corrected = false;
 
   if (ring.count >= 2) {
-    const expanded = expandQuad(best.quad, ring.dists);
-    if (expanded && quadPlausible(expanded, wk.w, wk.h)) {
+    // 該往外推多遠？兩種推法都試，讓評分決定，不要用猜的。
+    //
+    //  a) 每邊各推各自量到的距離——某些邊被影子蓋住量不到時會推不動而變形
+    //  b) 沒量到的邊改用其他邊的中位數——卡片外框寬度均勻，這個假設通常成立，
+    //     但邊框本來就不等寬時會推過頭
+    //
+    // 實測這兩種各自都會修好一種情況、弄壞另一種，所以兩個都算，
+    // 跟原本的框一起用同一把尺比，取支持度站得住腳之中面積最大的。
+    const found = ring.dists.filter((d) => d > 0);
+    const fill = found.length ? median(found) : 0;
+    const variants = [
+      ring.dists,
+      ring.dists.map((d) => (d > 0 ? d : fill)),
+    ];
+
+    let bestExp = null;
+    for (const dists of variants) {
+      const expanded = expandQuad(best.quad, dists);
+      if (!expanded || !quadPlausible(expanded, wk.w, wk.h)) continue;
       const expSupport = edgeSupport(mag, wk.w, wk.h, expanded, thr);
-      // 外緣的訊號本來就比內框弱，所以不要求一樣高，站得住腳就好
-      if (expSupport >= Math.max(0.6, support * 0.8)) {
-        workQuad = expanded;
-        support = expSupport;
-        corrected = true;
-        quad = refineQuad(
-          srcCanvas,
-          expanded.map((p) => ({
-            x: Math.max(0, Math.min(srcCanvas.width, p.x * wk.kx)),
-            y: Math.max(0, Math.min(srcCanvas.height, p.y * wk.ky)),
-          })),
-          Math.max(8, wk.kx * 3)
-        );
+      // 外緣的訊號本來就比內框弱，不要求跟內框一樣高，站得住腳就好
+      if (expSupport < Math.max(0.6, support * 0.8)) continue;
+      const wAvg = (dist(expanded[0], expanded[1]) + dist(expanded[3], expanded[2])) / 2;
+      const hAvg = (dist(expanded[0], expanded[3]) + dist(expanded[1], expanded[2])) / 2;
+      const area = wAvg * hAvg;
+      if (!bestExp || area > bestExp.area) {
+        bestExp = { quad: expanded, support: expSupport, area: area };
       }
+    }
+
+    if (bestExp) {
+      workQuad = bestExp.quad;
+      support = bestExp.support;
+      corrected = true;
+      quad = refineQuad(
+        srcCanvas,
+        bestExp.quad.map((p) => ({
+          x: Math.max(0, Math.min(srcCanvas.width, p.x * wk.kx)),
+          y: Math.max(0, Math.min(srcCanvas.height, p.y * wk.ky)),
+        })),
+        Math.max(8, wk.kx * 3)
+      );
     }
   }
 
