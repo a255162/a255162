@@ -46,6 +46,7 @@ export class CornerAdjuster {
 
   setImage(srcCanvas, quad) {
     this.src = srcCanvas;
+    this.userAdjusted = false;
     this.quad = quad.map((p) => ({ x: p.x, y: p.y }));
     this._resizeBacking();
     this.draw();
@@ -133,6 +134,7 @@ export class CornerAdjuster {
       x: Math.max(0, Math.min(this.src.width, ix)),
       y: Math.max(0, Math.min(this.src.height, iy)),
     };
+    this.userAdjusted = true;
     this.pointerPos = p;
     evt.preventDefault();
     this.draw();

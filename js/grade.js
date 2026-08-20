@@ -3,7 +3,7 @@
 //
 // 輸入一定是 imageutil.warp() 產出的標準卡片圖（734×1024，已裁到卡片實體邊緣）。
 
-import { CARD_W, CARD_H, colorDelta, median, mad } from './imageutil.js';
+import { CARD_W, CARD_H, median, mad } from './imageutil.js';
 
 // 實體卡 63×88mm，用來把 px 換算成 mm 顯示
 export const PX_PER_MM = CARD_W / 63;
@@ -14,8 +14,33 @@ const RING_DEPTH = 14;      // 取樣外框顏色的深度
 const SCAN_LINES = 41;      // 每邊掃描線數，取中位數抗雜訊
 const SCAN_SPAN = 0.7;      // 掃描線分布在該邊中間 70%，避開圓角
 const MAX_DEPTH = 0.3;      // 最多往內找到 30%，超過就是沒找到內框
-const EDGE_THRESHOLD = 55;  // 判定「顏色劇變」的通道差
+const EDGE_THRESHOLD = 26;  // 判定「顏色劇變」的距離（以色度為主）
 const RUN_LEN = 5;          // 要連續幾個像素都劇變才算數，濾掉雜點
+const UNIFORM_TOL = 20;     // 外框顏色算不算一致的容許距離
+
+/**
+ * 取像素的「色度 + 有上限的亮度」特徵。
+ *
+ * 影子會把 RGB 三個通道等比例壓暗，所以正規化色度 R/(R+G+B) 在影子內外幾乎一樣。
+ * 直接比 RGB 的話，一道影子橫過黃框就會讓程式以為外框顏色不一致而放棄量測
+ * （實測影子那張的一致性只有 53%，直接顯示「無法量測」）。
+ * 亮度仍保留一點權重並設上限，這樣黑框配深色圖這種「色度接近、只差明暗」的卡也分得出來。
+ */
+function feat(d, o) {
+  const R = d[o], G = d[o + 1], B = d[o + 2];
+  const s = R + G + B + 1;
+  return [
+    (R / s) * 255,
+    (G / s) * 255,
+    Math.min(R * 0.299 + G * 0.587 + B * 0.114, 200) * 0.30,
+  ];
+}
+
+/** 兩個特徵向量的距離。 */
+function featDist(a, b) {
+  const dr = a[0] - b[0], dg = a[1] - b[1], dl = a[2] - b[2];
+  return Math.sqrt(dr * dr + dg * dg + dl * dl);
+}
 
 /**
  * PSA 置中容差對照（正面）。傳入偏移較大那側的百分比。
@@ -31,31 +56,64 @@ export function centeringScore(maxPct, isBack) {
   return 1;
 }
 
-/** 取外框一圈的中位數顏色，並回報這圈顏色有多一致。 */
+/**
+ * 取外框顏色。除了整體的中位數，也回傳每一邊各自的中位數。
+ *
+ * 為什麼要分邊：影子壓在卡片某一側時，那一側的取樣值會被拉走，
+ * 用整體中位數去比就會在那一邊的最外緣立刻誤判成「顏色變了」，
+ * 量出 0.34mm 的荒謬邊寬。每邊各自比自己的顏色就不受其他邊影響。
+ */
 function sampleBorder(data, w, h) {
-  const rs = [], gs = [], bs = [];
-  const offsets = [];
+  const perSide = { left: [], right: [], top: [], bottom: [] };
+  const all = [];
 
-  const collect = (x, y) => {
-    const o = (y * w + x) * 4;
-    offsets.push(o);
-    rs.push(data[o]); gs.push(data[o + 1]); bs.push(data[o + 2]);
+  const collect = (side, x, y) => {
+    const f = feat(data, (y * w + x) * 4);
+    perSide[side].push(f);
+    all.push(f);
   };
 
   // 只取每邊中間 70%，圓角區不算
   const xLo = Math.round(w * 0.15), xHi = Math.round(w * 0.85);
   const yLo = Math.round(h * 0.15), yHi = Math.round(h * 0.85);
   for (let d = SKIP_EDGE; d < RING_DEPTH; d++) {
-    for (let x = xLo; x < xHi; x += 2) { collect(x, d); collect(x, h - 1 - d); }
-    for (let y = yLo; y < yHi; y += 2) { collect(d, y); collect(w - 1 - d, y); }
+    for (let x = xLo; x < xHi; x += 2) {
+      collect('top', x, d);
+      collect('bottom', x, h - 1 - d);
+    }
+    for (let y = yLo; y < yHi; y += 2) {
+      collect('left', d, y);
+      collect('right', w - 1 - d, y);
+    }
   }
 
-  const color = [median(rs), median(gs), median(bs)];
-  let inRange = 0;
-  for (const o of offsets) {
-    if (colorDelta(data, o, color) <= 40) inRange++;
+  const med = (list) => [
+    median(list.map((f) => f[0])),
+    median(list.map((f) => f[1])),
+    median(list.map((f) => f[2])),
+  ];
+
+  const color = med(all);
+  const sides = {};
+  for (const k of Object.keys(perSide)) sides[k] = med(perSide[k]);
+
+  // 一致性也要分邊算。影子橫過整張卡時，四邊各自其實都很一致，
+  // 只是彼此不同——用整體去算會誤判成「這張卡沒有單色外框」而放棄量測。
+  const sideUniformity = {};
+  for (const k of Object.keys(perSide)) {
+    const list = perSide[k];
+    let inRange = 0;
+    for (const f of list) if (featDist(f, sides[k]) <= UNIFORM_TOL) inRange++;
+    sideUniformity[k] = list.length ? inRange / list.length : 0;
   }
-  return { color: color, uniformity: offsets.length ? inRange / offsets.length : 0 };
+  const uniformity = median(Object.values(sideUniformity));
+
+  return {
+    color: color,
+    sideColors: sides,
+    sideUniformity: sideUniformity,
+    uniformity: uniformity,
+  };
 }
 
 /**
@@ -87,14 +145,16 @@ function scanSide(data, w, h, side, borderColor) {
       else { x = a; y = h - 1 - d; }
 
       const o = (y * w + x) * 4;
-      if (colorDelta(data, o, borderColor) > EDGE_THRESHOLD) {
+      if (featDist(feat(data, o), borderColor) > EDGE_THRESHOLD) {
         run++;
         if (run >= RUN_LEN) { found = d - RUN_LEN + 1; break; }
       } else {
         run = 0;
       }
     }
-    if (found > 0) depths.push(found);
+    // 一掃就中代表最外緣的像素本身就不像外框——通常是影子邊界壓在卡緣上，
+    // 或四角沒框準。這種值不是「邊框很窄」，是量錯了，不能當成有效數據。
+    if (found > SKIP_EDGE + 1) depths.push(found);
   }
 
   return {
@@ -111,6 +171,10 @@ function scanSide(data, w, h, side, borderColor) {
  */
 export function measureCentering(img, opts) {
   const isBack = !!(opts && opts.isBack);
+  // 四角框得準不準，決定了這張標準圖有沒有意義。
+  // 框歪了還宣稱量測可信，就是把錯誤包裝成確定的數字。
+  const detConfidence = opts && typeof opts.detConfidence === 'number'
+    ? opts.detConfidence : 1;
   const d = img.data;
   const w = img.width;
   const h = img.height;
@@ -127,10 +191,10 @@ export function measureCentering(img, opts) {
   }
 
   const sides = {
-    left: scanSide(d, w, h, 'left', border.color),
-    right: scanSide(d, w, h, 'right', border.color),
-    top: scanSide(d, w, h, 'top', border.color),
-    bottom: scanSide(d, w, h, 'bottom', border.color),
+    left: scanSide(d, w, h, 'left', border.sideColors.left),
+    right: scanSide(d, w, h, 'right', border.sideColors.right),
+    top: scanSide(d, w, h, 'top', border.sideColors.top),
+    bottom: scanSide(d, w, h, 'bottom', border.sideColors.bottom),
   };
 
   const missing = Object.keys(sides).filter(
@@ -183,7 +247,19 @@ export function measureCentering(img, opts) {
   // 量得出數字，不代表數字可信。全圖卡、框歪了、光線亂七八糟的時候，
   // 這裡照樣會吐出一組比例——但那組比例是錯的。
   // 與其把一個大大的分數擺在畫面正中央讓人誤信，不如明講「這張量不準」。
-  const reliable = border.uniformity >= 0.62 && worstSpread <= 12 && confidence >= 0.3;
+  const reliable =
+    border.uniformity >= 0.62 &&
+    worstSpread <= 12 &&
+    confidence >= 0.3 &&
+    detConfidence >= 0.6;
+
+  if (detConfidence < 0.6) {
+    warnings.push({
+      level: 'error',
+      text: '四角自動框選的信心度只有 ' + Math.round(detConfidence * 100) +
+            '%，這張標準圖可能整個歪掉。請回上一步手動把四角拖到卡片實體邊緣。',
+    });
+  }
 
   return {
     ok: true,
@@ -205,6 +281,7 @@ export function measureCentering(img, opts) {
     scoreTB: scoreTB,
     score: score,
     confidence: confidence,
+    detConfidence: detConfidence,
     // 給畫面畫內框用
     innerRect: { x: L, y: T, w: w - L - R, h: h - T - B },
   };

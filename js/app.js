@@ -1,6 +1,8 @@
 // 分頁切換、鑑定流程串接、PWA 安裝與快取管理。
 
-import { loadImageFile, autoDetectQuad, warp, imageDataToCanvas, CARD_W, CARD_H } from './imageutil.js';
+import { loadImageFile, warp, imageDataToCanvas, CARD_W, CARD_H } from './imageutil.js';
+import { detectCardQuad } from './detect.js';
+import { LiveCamera, lightAdvice } from './camera.js';
 import { CornerAdjuster } from './capture.js';
 import { measureCentering, ratioText, scoreLabel } from './grade.js';
 import { drawCenteringOverlay } from './overlay.js';
@@ -31,7 +33,11 @@ function showTab(name) {
 }
 
 document.querySelectorAll('.tab').forEach((b) => {
-  b.addEventListener('click', () => showTab(b.dataset.tab));
+  b.addEventListener('click', () => {
+    // 離開這一頁就關鏡頭，不然背景一直開著很耗電
+    if (b.dataset.tab !== 'grade') closeCamera();
+    showTab(b.dataset.tab);
+  });
 });
 
 // ===== 步驟 =====
@@ -59,22 +65,29 @@ function nextFrame() {
 }
 
 // ===== 拍照 =====
+
+/** 拿到一張照片之後的共同流程：偵測四角 → 進框選畫面。 */
+async function useImage(srcCanvas) {
+  state.src = srcCanvas;
+  state.std = null;
+  state.result = null;
+
+  showStep('step-adjust');
+  if (!state.adjuster) state.adjuster = new CornerAdjuster($('adjust-canvas'));
+
+  const det = detectCardQuad(state.src);
+  state.detConfidence = det.confidence;
+  state.adjuster.setImage(state.src, det.quad);
+  showDetectNotice(det);
+}
+
 $('file-input').addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
   busy(true, '讀取照片…');
   try {
     await nextFrame();
-    state.src = await loadImageFile(file);
-    state.std = null;
-    state.result = null;
-
-    showStep('step-adjust');
-    if (!state.adjuster) state.adjuster = new CornerAdjuster($('adjust-canvas'));
-
-    const det = autoDetectQuad(state.src);
-    state.adjuster.setImage(state.src, det.quad);
-    showDetectNotice(det);
+    await useImage(await loadImageFile(file));
   } catch (err) {
     alert('讀不到這張照片：' + err.message);
     showStep('step-capture');
@@ -84,35 +97,125 @@ $('file-input').addEventListener('change', async (e) => {
   }
 });
 
+// ===== 即時取景 =====
+let cam = null;
+
+async function openCamera() {
+  if (!cam) cam = new LiveCamera($('cam-video'), $('cam-overlay'));
+  try {
+    const info = await cam.start();
+    $('cam-wrap').hidden = false;
+    $('cam-idle').hidden = true;
+    $('btn-torch').hidden = !info.torch;
+
+    cam.onUpdate = (i) => {
+      const advice = lightAdvice(i.light, cam.hasTorch());
+      const el = $('cam-advice');
+      const shutter = $('btn-shutter');
+      if (advice) {
+        el.className = 'cam-advice show ' + advice.level;
+        el.textContent = advice.text;
+      } else if (i.suspectInner) {
+        el.className = 'cam-advice show warn';
+        el.textContent = '框可能只抓到卡面內框，拍完請確認四個角';
+      } else if (i.confidence < 0.5) {
+        el.className = 'cam-advice show hint';
+        el.textContent = '找不到卡片輪廓，讓整張卡入鏡、背景單純一點';
+      } else if (i.ready) {
+        el.className = 'cam-advice show ok';
+        el.textContent = '對好了，拿穩…';
+      } else {
+        el.className = 'cam-advice';
+      }
+      shutter.classList.toggle('ready', !!i.ready);
+    };
+
+    cam.onAutoShot = async (canvas) => {
+      closeCamera();
+      busy(true, '處理照片…');
+      await nextFrame();
+      try {
+        await useImage(canvas);
+      } finally {
+        busy(false);
+      }
+    };
+  } catch (err) {
+    // HTTPS 之外的環境（區網 http）拿不到相機，退回系統相機
+    $('cam-fallback-note').textContent =
+      '開不了即時相機（' + err.message + '），改用系統相機拍。';
+    $('file-input').click();
+  }
+}
+
+function closeCamera() {
+  if (cam) cam.stop();
+  $('cam-wrap').hidden = true;
+  $('cam-idle').hidden = false;
+  $('cam-advice').className = 'cam-advice';
+}
+
+$('btn-open-cam').addEventListener('click', openCamera);
+$('btn-cam-close').addEventListener('click', closeCamera);
+
+$('btn-shutter').addEventListener('click', async () => {
+  if (!cam) return;
+  const canvas = cam.grabFrame(2000);
+  if (!canvas) return;
+  closeCamera();
+  busy(true, '處理照片…');
+  await nextFrame();
+  try {
+    await useImage(canvas);
+  } finally {
+    busy(false);
+  }
+});
+
+$('btn-torch').addEventListener('click', async () => {
+  if (!cam) return;
+  const on = !cam.torchOn;
+  const ok = await cam.setTorch(on);
+  $('btn-torch').classList.toggle('on', ok && on);
+  if (!ok) alert('這支手機（或這個瀏覽器）不支援補燈。iPhone 的 Safari 目前就不支援。');
+});
+
 function showDetectNotice(det) {
   const el = $('detect-notice');
   el.className = 'notice show';
-  if (det.confidence >= 0.7) {
+  if (det.suspectInner) {
+    el.classList.add('warn');
+    el.textContent =
+      '框到的可能是卡面內框而不是卡片邊緣（桌面顏色跟卡片外框太接近時會這樣）。請把四個角拖到卡片的實體邊緣。';
+  } else if (det.confidence >= 0.7) {
     el.classList.add('ok');
-    el.textContent = '已自動框出卡片。請確認四個角都貼齊卡片邊緣，不對就直接拖。';
+    el.textContent =
+      '已自動框出卡片（信心度 ' + Math.round(det.confidence * 100) + '%）。不對的話直接拖角點。';
   } else {
     el.classList.add('warn');
     el.textContent =
       det.confidence > 0
         ? '自動偵測不太確定（信心度 ' + Math.round(det.confidence * 100) + '%），請手動把四個角拖到卡片邊緣。'
-        : '認不出卡片輪廓（背景跟卡片顏色太接近？）。請手動把四個角拖到卡片邊緣。';
+        : '認不出卡片輪廓。請手動把四個角拖到卡片邊緣，或換個背景重拍。';
   }
 }
 
 $('btn-auto').addEventListener('click', () => {
-  const det = state.adjuster.autoDetect();
+  const det = detectCardQuad(state.src);
+  state.detConfidence = det.confidence;
+  state.adjuster.setImage(state.src, det.quad);
   showDetectNotice(det);
 });
 
 $('btn-redo').addEventListener('click', () => {
   showStep('step-capture');
-  $('file-input').click();
+  openCamera();
 });
 
 $('btn-back-adjust').addEventListener('click', () => showStep('step-adjust'));
 $('btn-new').addEventListener('click', () => {
   showStep('step-capture');
-  $('file-input').click();
+  openCamera();
 });
 
 // ===== 分析 =====
@@ -121,6 +224,8 @@ $('btn-analyze').addEventListener('click', async () => {
   try {
     await nextFrame();
     state.quad = state.adjuster.getQuad();
+    // 使用者手動調過角點就是他自己確認過了，不再受自動偵測信心度限制
+    if (state.adjuster.userAdjusted) state.detConfidence = 1;
 
     const t0 = performance.now();
     const imgData = warp(state.src, state.quad);
@@ -132,7 +237,7 @@ $('btn-analyze').addEventListener('click', async () => {
 
     busy(true, '量測置中…');
     await nextFrame();
-    state.result = measureCentering(imgData);
+    state.result = measureCentering(imgData, { detConfidence: state.detConfidence });
     state.result.elapsed = Math.round(performance.now() - t0);
 
     renderResult();

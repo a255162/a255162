@@ -349,3 +349,80 @@ table.measure td.ok { color: var(--green); }
 
 .link-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .link-row .btn { flex: 1 1 42%; text-decoration: none; line-height: 22px; }
+
+/* ===== 即時取景相機 ===== */
+.cam-wrap {
+  position: relative;
+  width: 100%;
+  height: 72vh;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--line);
+}
+.cam-wrap[hidden] { display: none; }
+.cam-wrap video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;   /* 疊圖的座標換算跟著 cover 走，兩邊要一致 */
+}
+.cam-wrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.cam-advice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  text-align: center;
+  display: none;
+  backdrop-filter: blur(6px);
+}
+.cam-advice.show { display: block; }
+.cam-advice.warn { background: rgba(240, 190, 40, 0.9); color: #241c00; font-weight: 600; }
+.cam-advice.hint { background: rgba(10, 12, 18, 0.7); color: var(--text); }
+.cam-advice.ok { background: rgba(46, 204, 150, 0.9); color: #06231a; font-weight: 600; }
+
+.cam-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 14px 18px calc(14px + var(--safe-bottom));
+  background: linear-gradient(to top, rgba(6, 8, 14, 0.85), transparent);
+}
+.cam-btn {
+  appearance: none;
+  border: none;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cam-btn:active { transform: scale(0.94); }
+.cam-btn.on { background: var(--amber); color: #241c00; }
+.cam-btn[hidden] { display: none; }
+.cam-btn.shutter {
+  width: 74px;
+  height: 74px;
+  background: #fff;
+  border: 5px solid rgba(255, 255, 255, 0.45);
+  background-clip: padding-box;
+}
+.cam-btn.shutter.ready { border-color: var(--green); }

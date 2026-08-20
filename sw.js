@@ -3,7 +3,7 @@
 // 全部用相對路徑：這個 App 會放在 GitHub Pages 的子目錄（/pokecard/），
 // 寫死 '/index.html' 會指到網站根目錄而整個失效——這是 PWA 最常見的踩雷點。
 
-const VERSION = 'v4-identify';
+const VERSION = 'v5-camera';
 const CACHE = 'pokecard-' + VERSION;
 
 const SHELL = [
@@ -19,6 +19,8 @@ const SHELL = [
   './js/identify.js',
   './js/tcgdex.js',
   './js/db.js',
+  './js/detect.js',
+  './js/camera.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
