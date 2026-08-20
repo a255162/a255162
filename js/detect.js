@@ -23,6 +23,9 @@ const THETA_BINS = 180;    // Hough 角度解析度（1 度）
 const RHO_STEP = 2;
 const TOP_LINES = 7;       // 每個方向family取幾條線去組合
 const EDGE_PCTL = 0.90;    // 梯度前 10% 才算邊緣點
+// 支持度差多少以內算「差不多」，之後改用面積大的（外框）。
+// 太小的話真正的卡片外緣（訊號通常比內框弱）會被排除在外，又回去鎖內框。
+const NEAR_TOL = 0.12;
 
 /** 縮到工作解析度並取像素。 */
 function toWorking(srcCanvas, workW) {
@@ -297,7 +300,7 @@ function dist(a, b) {
  *
  * 只在「整條邊幾乎都有」時才算數，斜切過去的影子邊界不會滿足這個條件。
  */
-function hasOuterRing(mag, w, h, quad, thr) {
+function outerRingDistances(mag, w, h, quad, thr) {
   const cx = (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4;
   const cy = (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4;
   const shortSide = Math.min(
@@ -306,6 +309,7 @@ function hasOuterRing(mag, w, h, quad, thr) {
   );
   const maxOut = Math.max(4, Math.round(shortSide * 0.16));
   let edgesWithOuter = 0;
+  const dists = [0, 0, 0, 0];
 
   for (let e = 0; e < 4; e++) {
     const a = quad[e];
@@ -319,6 +323,7 @@ function hasOuterRing(mag, w, h, quad, thr) {
 
     // 對每個往外的距離，看整條邊有多少比例都出現邊緣
     let bestFrac = 0;
+    let bestD = 0;
     for (let d = 5; d <= maxOut; d++) {
       let hit = 0, tot = 0;
       for (let s = 2; s < 18; s++) {
@@ -330,11 +335,53 @@ function hasOuterRing(mag, w, h, quad, thr) {
         tot++;
         if (mag[sy * w + sx] >= thr) hit++;
       }
-      if (tot >= 10) bestFrac = Math.max(bestFrac, hit / tot);
+      if (tot >= 10 && hit / tot > bestFrac) { bestFrac = hit / tot; bestD = d; }
     }
-    if (bestFrac >= 0.75) edgesWithOuter++;
+    dists[e] = bestFrac >= 0.75 ? bestD : 0;
+    if (dists[e]) edgesWithOuter++;
   }
-  return edgesWithOuter;
+  return { count: edgesWithOuter, dists: dists };
+}
+
+/** 把四邊各自往外推 dists[e] 個像素，重新求四個角。 */
+function expandQuad(quad, dists) {
+  const cx = (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4;
+  const cy = (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4;
+  const lines = [];
+  for (let e = 0; e < 4; e++) {
+    const a = quad[e];
+    const b = quad[(e + 1) % 4];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 8) return null;
+    let nx = -(b.y - a.y) / len;
+    let ny = (b.x - a.x) / len;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    if ((cx - mx) * nx + (cy - my) * ny > 0) { nx = -nx; ny = -ny; }
+    const d = dists[e] || 0;
+    const p1 = { x: a.x + nx * d, y: a.y + ny * d };
+    const p2 = { x: b.x + nx * d, y: b.y + ny * d };
+    // 直線以兩點表示，之後求相鄰兩邊的交點
+    lines.push({ p1: p1, p2: p2 });
+  }
+  const pts = [];
+  for (let i = 0; i < 4; i++) {
+    const l1 = lines[(i + 3) % 4];
+    const l2 = lines[i];
+    const p = segIntersect(l1, l2);
+    if (!p) return null;
+    pts.push(p);
+  }
+  return pts;
+}
+
+function segIntersect(l1, l2) {
+  const a1 = l1.p2.y - l1.p1.y, b1 = l1.p1.x - l1.p2.x;
+  const c1 = a1 * l1.p1.x + b1 * l1.p1.y;
+  const a2 = l2.p2.y - l2.p1.y, b2 = l2.p1.x - l2.p2.x;
+  const c2 = a2 * l2.p1.x + b2 * l2.p1.y;
+  const det = a1 * b2 - a2 * b1;
+  if (Math.abs(det) < 1e-9) return null;
+  return { x: (b2 * c1 - b1 * c2) / det, y: (a1 * c2 - a2 * c1) / det };
 }
 
 /** 依左上、右上、右下、左下排序四個點。 */
@@ -446,7 +493,7 @@ export function detectCardQuad(srcCanvas, opts) {
   // 所以最高分的常常是藝術區的矩形而不是卡片本身——量出來的置中就會整個錯掉。
   // 卡片外框在幾何上必定包住藝術區，所以支持度接近時挑面積大的那個就對了。
   const top = score(candidates[0]);
-  const near = candidates.filter((c) => score(c) >= top - 0.05);
+  const near = candidates.filter((c) => score(c) >= top - NEAR_TOL);
   near.sort((a, b) => b.area - a.area);
   const best = near[0];
 
@@ -457,17 +504,48 @@ export function detectCardQuad(srcCanvas, opts) {
   }));
   quad = refineQuad(srcCanvas, quad, Math.max(8, wk.kx * 3));
 
-  // 外面還有一圈邊 = 很可能框到內框了，這時候不能宣稱高信心
-  const outerEdges = hasOuterRing(mag, wk.w, wk.h, best.quad, thr);
-  let confidence = Math.max(0, Math.min(1, best.support));
-  const suspectInner = outerEdges >= 2;
+  // 框外面還有一圈平行邊 = 很可能框到的是黃框內緣而不是卡片邊緣。
+  // 既然找得到那圈邊在哪，就別只是警告——把四邊推過去、重新評分，
+  // 推出來的框如果同樣站得住腳就採用它。
+  const ring = outerRingDistances(mag, wk.w, wk.h, best.quad, thr);
+  let workQuad = best.quad;
+  let support = best.support;
+  let corrected = false;
+
+  if (ring.count >= 2) {
+    const expanded = expandQuad(best.quad, ring.dists);
+    if (expanded && quadPlausible(expanded, wk.w, wk.h)) {
+      const expSupport = edgeSupport(mag, wk.w, wk.h, expanded, thr);
+      // 外緣的訊號本來就比內框弱，所以不要求一樣高，站得住腳就好
+      if (expSupport >= Math.max(0.6, support * 0.8)) {
+        workQuad = expanded;
+        support = expSupport;
+        corrected = true;
+        quad = refineQuad(
+          srcCanvas,
+          expanded.map((p) => ({
+            x: Math.max(0, Math.min(srcCanvas.width, p.x * wk.kx)),
+            y: Math.max(0, Math.min(srcCanvas.height, p.y * wk.ky)),
+          })),
+          Math.max(8, wk.kx * 3)
+        );
+      }
+    }
+  }
+
+  // 推完之後再檢查一次；還是有外圈就真的說不準了
+  const after = corrected
+    ? outerRingDistances(mag, wk.w, wk.h, workQuad, thr)
+    : ring;
+  const suspectInner = after.count >= 2;
+  let confidence = Math.max(0, Math.min(1, support));
   if (suspectInner) confidence = Math.min(confidence, 0.55);
 
   return {
     quad: quad,
     confidence: confidence,
-    support: best.support,
-    method: best.method,
+    support: support,
+    method: best.method + (corrected ? '+expand' : ''),
     suspectInner: suspectInner,
   };
 }
