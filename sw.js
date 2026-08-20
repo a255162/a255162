@@ -3,7 +3,7 @@
 // 全部用相對路徑：這個 App 會放在 GitHub Pages 的子目錄（/pokecard/），
 // 寫死 '/index.html' 會指到網站根目錄而整個失效——這是 PWA 最常見的踩雷點。
 
-const VERSION = 'v3-identify';
+const VERSION = 'v4-identify';
 const CACHE = 'pokecard-' + VERSION;
 
 const SHELL = [
@@ -62,6 +62,8 @@ self.addEventListener('fetch', (event) => {
           c.match(req).then((hit) => {
             if (hit) return hit;
             return fetch(req).then((res) => {
+              // 圖片必須帶 crossorigin 發出來，否則回應是 opaque（status 0），
+              // 這裡存不進去，離線就看不到卡圖
               if (res && res.status === 200) c.put(req, res.clone());
               return res;
             });

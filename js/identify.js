@@ -124,7 +124,9 @@ function renderResults(list) {
       return (
         '<button class="result-row" data-id="' + esc(c.id) + '">' +
         (img
-          ? '<img loading="lazy" src="' + esc(img) + '" alt="">'
+          // crossorigin：assets.tcgdex.net 有送 CORS 標頭，帶上之後回應才是
+          // 正常的 200 而不是 opaque，Service Worker 才存得進離線快取
+          ? '<img loading="lazy" crossorigin="anonymous" src="' + esc(img) + '" alt="">'
           : '<span class="noimg">無圖</span>') +
         '<span class="result-text"><b>' + esc(c.name || '(無名稱)') + '</b>' +
         '<small>' + esc(setName(c.id)) + '　' + esc(c.localId || '') + '</small></span>' +
