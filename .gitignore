@@ -1,0 +1,11 @@
+# 測試用的合成卡片圖，可用 python tools/make_test_card.py 重新產生
+test/*.png
+test/out/
+
+# 瀏覽器測試時存下來的畫面輸出
+*.tmp
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

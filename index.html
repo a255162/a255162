@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#12141c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="卡牌鑑定">
+<title>寶可夢卡牌鑑定</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>寶可夢卡牌鑑定</h1>
+  <span class="tag" id="build-tag">M1 置中量測</span>
+</header>
+
+<main id="main">
+
+  <!-- ===== 鑑定（品相） ===== -->
+  <section class="panel active" id="panel-grade">
+
+    <!-- 步驟 1：拍照 -->
+    <div class="step active" id="step-capture">
+      <div class="card">
+        <h2>拍一張卡片正面</h2>
+        <ul class="tips">
+          <li><b>正上方拍</b>，鏡頭跟卡片平行，不要斜著拍</li>
+          <li>放在<b>跟卡片顏色差很多</b>的桌面上（深色卡配淺色桌面）</li>
+          <li><b>避開直射光與反光</b>，窗邊的散射光最好</li>
+          <li>四個角都要入鏡，卡片盡量佔滿畫面</li>
+          <li>先<b>拿出卡套</b>，套子的反光會讓邊緣量不準</li>
+        </ul>
+      </div>
+      <label class="btn primary big" for="file-input">
+        <span class="ico">📷</span> 拍照或選圖
+      </label>
+      <input type="file" id="file-input" accept="image/*" capture="environment" hidden>
+      <p class="hint">照片只留在你的手機上，不會上傳到任何地方。</p>
+    </div>
+
+    <!-- 步驟 2：框選四角 -->
+    <div class="step" id="step-adjust">
+      <div class="notice" id="detect-notice"></div>
+      <canvas id="adjust-canvas"></canvas>
+      <p class="hint">拖曳四個綠點，對準<b>卡片的實體邊緣</b>（不是黃框內緣）。按住時右上／左上會出現放大鏡。</p>
+      <div class="btn-row">
+        <button class="btn" id="btn-redo">重拍</button>
+        <button class="btn" id="btn-auto">自動偵測</button>
+        <button class="btn primary" id="btn-analyze">開始分析</button>
+      </div>
+    </div>
+
+    <!-- 步驟 3：結果 -->
+    <div class="step" id="step-result">
+      <div id="result-warnings"></div>
+
+      <div class="score-box" id="score-box">
+        <div class="score-num" id="score-num">–</div>
+        <div class="score-side">
+          <div class="score-label" id="score-label">分析中…</div>
+          <div class="score-sub" id="score-sub"></div>
+        </div>
+      </div>
+
+      <canvas id="result-canvas" class="result-canvas"></canvas>
+
+      <div class="card">
+        <h3>量測明細</h3>
+        <table class="measure" id="measure-table"></table>
+        <p class="hint" id="confidence-line"></p>
+      </div>
+
+      <div class="card muted">
+        <h3>這個分數怎麼算的</h3>
+        <p>量出黃框（或卡片外框）在上下左右的實際寬度，算出左右與上下的比例，再對照 PSA 公布的置中容差：正面 55/45 以內對應 10、60/40 對應 9、65/35 對應 8，以此類推。<b>取左右與上下之中較差的那一項</b>當結果。</p>
+          <p class="warn-text">這是<b>送評前的自我檢查</b>，只看置中一項。PSA／BGS 的實際分數還會計入邊角、邊緣、表面與印刷瑕疵，也由人眼判定，因此<b>不等於官方分數</b>。</p>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn" id="btn-back-adjust">重新框選</button>
+        <button class="btn primary" id="btn-new">拍下一張</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 辨識查價 ===== -->
+  <section class="panel" id="panel-identify">
+    <div class="card">
+      <h2>辨識與查價</h2>
+      <p class="soon">M3 里程碑，尚未開始</p>
+      <p>完成後可以用<b>系列＋卡號</b>、<b>中／日／英卡名</b>查到官方卡圖與行情價，資料來自 TCGdex（繁中 98 個系列、日文 183、英文 218，含 cardmarket 歐元價與 tcgplayer 美元價）。</p>
+      <p class="warn-text">先講清楚：那是<b>歐美市場價</b>。台灣蝦皮／露天與日本駿河屋的成交價沒有免費 API 可用，屆時會做成一鍵開啟外部搜尋，成交價由你自己記錄。</p>
+    </div>
+  </section>
+
+  <!-- ===== 真偽 ===== -->
+  <section class="panel" id="panel-auth">
+    <div class="card">
+      <h2>真偽輔助檢查</h2>
+      <p class="soon">M5 里程碑，尚未開始</p>
+      <p>完成後會比對官方卡圖的版面差異、背面藍色色調、印刷網點與邊緣黑芯，輸出<b>可疑點清單</b>。</p>
+      <p class="warn-text">手機照片無法取代專業鑑定。這項功能只能篩掉<b>明顯的假卡</b>，不會給你「真」或「假」的結論，高價卡請送官方鑑定。</p>
+    </div>
+  </section>
+
+  <!-- ===== 收藏 ===== -->
+  <section class="panel" id="panel-collection">
+    <div class="card">
+      <h2>收藏管理</h2>
+      <p class="soon">M4 里程碑，尚未開始</p>
+      <p>完成後每次鑑定的照片、分數、量測值都能存進手機，記錄購入價與估值，並可匯出 JSON／CSV 備份。</p>
+    </div>
+  </section>
+
+  <!-- ===== 設定 ===== -->
+  <section class="panel" id="panel-settings">
+    <div class="card">
+      <h2>安裝到主畫面</h2>
+      <p>Chrome 右上角選單 →「加到主畫面」，之後就能像一般 App 一樣開啟，離線也能用。</p>
+      <button class="btn" id="btn-install" hidden>立即安裝</button>
+      <p class="hint" id="install-state"></p>
+    </div>
+
+    <div class="card">
+      <h2>儲存與快取</h2>
+      <p class="hint" id="storage-line">計算中…</p>
+      <div class="btn-row">
+        <button class="btn" id="btn-clear-cache">清除快取並重載</button>
+      </div>
+    </div>
+
+    <div class="card muted">
+      <h2>目前進度</h2>
+      <table class="measure">
+        <tr><td>M1</td><td>拍照、四角校正、置中量測</td><td class="ok">完成</td></tr>
+        <tr><td>M2</td><td>邊角／邊緣／表面、綜合分數</td><td>未開始</td></tr>
+        <tr><td>M3</td><td>卡片辨識與查價</td><td>未開始</td></tr>
+        <tr><td>M4</td><td>收藏管理</td><td>未開始</td></tr>
+        <tr><td>M5</td><td>真偽輔助檢查</td><td>未開始</td></tr>
+      </table>
+      <p class="hint" id="version-line"></p>
+    </div>
+  </section>
+
+</main>
+
+<nav class="tabbar">
+  <button class="tab active" data-tab="grade"><span>🔍</span>鑑定</button>
+  <button class="tab" data-tab="identify"><span>🃏</span>辨識</button>
+  <button class="tab" data-tab="auth"><span>🛡️</span>真偽</button>
+  <button class="tab" data-tab="collection"><span>📁</span>收藏</button>
+  <button class="tab" data-tab="settings"><span>⚙️</span>設定</button>
+</nav>
+
+<div class="overlay-busy" id="busy" hidden>
+  <div class="spinner"></div>
+  <p id="busy-text">分析中…</p>
+</div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
