@@ -18,13 +18,13 @@
 
 <header class="topbar">
   <h1>寶可夢卡牌鑑定</h1>
-  <span class="tag" id="build-tag">M1 置中量測</span>
+  <span class="tag" id="build-tag">辨識查價</span>
 </header>
 
 <main id="main">
 
   <!-- ===== 鑑定（品相） ===== -->
-  <section class="panel active" id="panel-grade">
+  <section class="panel" id="panel-grade">
 
     <!-- 步驟 1：拍照 -->
     <div class="step active" id="step-capture">
@@ -91,33 +91,59 @@
   </section>
 
   <!-- ===== 辨識查價 ===== -->
-  <section class="panel" id="panel-identify">
-    <div class="card">
-      <h2>辨識與查價</h2>
-      <p class="soon">M3 里程碑，尚未開始</p>
-      <p>完成後可以用<b>系列＋卡號</b>、<b>中／日／英卡名</b>查到官方卡圖與行情價，資料來自 TCGdex（繁中 98 個系列、日文 183、英文 218，含 cardmarket 歐元價與 tcgplayer 美元價）。</p>
-      <p class="warn-text">先講清楚：那是<b>歐美市場價</b>。台灣蝦皮／露天與日本駿河屋的成交價沒有免費 API 可用，屆時會做成一鍵開啟外部搜尋，成交價由你自己記錄。</p>
+  <section class="panel active" id="panel-identify">
+
+    <div id="search-view">
+      <form class="search-bar" id="search-form">
+        <select id="lang-select" aria-label="卡片語言"></select>
+        <input type="search" id="search-input" placeholder="卡名或卡號" autocomplete="off" enterkeyhint="search">
+        <button type="submit" class="btn primary">查</button>
+      </form>
+      <p class="hint">打卡名（例：皮卡丘）或直接打卡號（例：SV8-001）。卡號印在卡片右下角。</p>
+
+      <p class="status" id="search-status"></p>
+      <div id="search-results" class="result-list"></div>
+
+      <details class="card" id="by-set">
+        <summary>不確定卡名？用系列＋卡號查</summary>
+        <div class="set-picker">
+          <select id="set-select" aria-label="系列"></select>
+          <div class="set-row">
+            <input type="text" id="num-input" placeholder="卡號 例如 001" inputmode="numeric">
+            <button class="btn" id="set-go" type="button">查詢</button>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div id="card-detail" hidden>
+      <button class="btn back-btn" id="btn-back-search">← 回搜尋</button>
+      <img id="detail-img" class="detail-img" alt="卡片圖">
+      <h2 id="detail-name" class="detail-name"></h2>
+
+      <div class="card">
+        <h3>卡片資料</h3>
+        <table class="measure" id="detail-meta"></table>
+      </div>
+
+      <div class="card">
+        <h3>參考行情</h3>
+        <div id="price-headline"></div>
+        <table class="measure" id="price-table"></table>
+        <p class="hint" id="price-updated"></p>
+        <p class="hint" id="rate-line"></p>
+        <p class="warn-text">這是<b>歐美市場</b>的成交參考價（cardmarket 歐元／tcgplayer 美元）。中文版與日文版的卡也查得到價，但那是對應的<b>歐美版商品</b>價格，跟台灣的行情常常差很多。台灣實際價請用下面的連結看。</p>
+      </div>
+
+      <div class="card">
+        <h3>台／日實際行情</h3>
+        <p class="hint">這些站沒有公開 API，只能開網頁自己看。點了會開新分頁。</p>
+        <div class="link-row" id="market-links"></div>
+      </div>
     </div>
   </section>
 
-  <!-- ===== 真偽 ===== -->
-  <section class="panel" id="panel-auth">
-    <div class="card">
-      <h2>真偽輔助檢查</h2>
-      <p class="soon">M5 里程碑，尚未開始</p>
-      <p>完成後會比對官方卡圖的版面差異、背面藍色色調、印刷網點與邊緣黑芯，輸出<b>可疑點清單</b>。</p>
-      <p class="warn-text">手機照片無法取代專業鑑定。這項功能只能篩掉<b>明顯的假卡</b>，不會給你「真」或「假」的結論，高價卡請送官方鑑定。</p>
-    </div>
-  </section>
 
-  <!-- ===== 收藏 ===== -->
-  <section class="panel" id="panel-collection">
-    <div class="card">
-      <h2>收藏管理</h2>
-      <p class="soon">M4 里程碑，尚未開始</p>
-      <p>完成後每次鑑定的照片、分數、量測值都能存進手機，記錄購入價與估值，並可匯出 JSON／CSV 備份。</p>
-    </div>
-  </section>
 
   <!-- ===== 設定 ===== -->
   <section class="panel" id="panel-settings">
@@ -139,11 +165,10 @@
     <div class="card muted">
       <h2>目前進度</h2>
       <table class="measure">
-        <tr><td>M1</td><td>拍照、四角校正、置中量測</td><td class="ok">完成</td></tr>
-        <tr><td>M2</td><td>邊角／邊緣／表面、綜合分數</td><td>未開始</td></tr>
-        <tr><td>M3</td><td>卡片辨識與查價</td><td>未開始</td></tr>
-        <tr><td>M4</td><td>收藏管理</td><td>未開始</td></tr>
-        <tr><td>M5</td><td>真偽輔助檢查</td><td>未開始</td></tr>
+        <tr><td>辨識查價</td><td>卡名／卡號查卡、官方卡圖、參考行情</td><td class="ok">完成</td></tr>
+        <tr><td>量置中</td><td>拍照、四角校正、置中量測</td><td class="ok">完成</td></tr>
+        <tr><td>品相細項</td><td>邊角／邊緣／表面分析</td><td>不做（送鑑卡公司）</td></tr>
+        <tr><td>真偽辨識</td><td>假卡篩檢</td><td>不做（送鑑卡公司）</td></tr>
       </table>
       <p class="hint" id="version-line"></p>
     </div>
@@ -152,10 +177,8 @@
 </main>
 
 <nav class="tabbar">
-  <button class="tab active" data-tab="grade"><span>🔍</span>鑑定</button>
-  <button class="tab" data-tab="identify"><span>🃏</span>辨識</button>
-  <button class="tab" data-tab="auth"><span>🛡️</span>真偽</button>
-  <button class="tab" data-tab="collection"><span>📁</span>收藏</button>
+  <button class="tab active" data-tab="identify"><span>🃏</span>辨識查價</button>
+  <button class="tab" data-tab="grade"><span>📐</span>量置中</button>
   <button class="tab" data-tab="settings"><span>⚙️</span>設定</button>
 </nav>
 

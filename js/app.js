@@ -4,8 +4,10 @@ import { loadImageFile, autoDetectQuad, warp, imageDataToCanvas, CARD_W, CARD_H 
 import { CornerAdjuster } from './capture.js';
 import { measureCentering, ratioText, scoreLabel } from './grade.js';
 import { drawCenteringOverlay } from './overlay.js';
+import { initIdentify } from './identify.js';
+import { cacheCount, cacheClear } from './db.js';
 
-const VERSION = 'M1 (2026-08-20)';
+const VERSION = '辨識查價 + 置中量測 (2026-08-20)';
 
 const state = {
   src: null,      // 原始照片 canvas
@@ -220,14 +222,17 @@ async function refreshStorage() {
   const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
   let persisted = false;
   if (navigator.storage.persisted) persisted = await navigator.storage.persisted();
+  const cached = await cacheCount();
   line.textContent =
     '已用 ' + mb(est.usage || 0) + ' / 可用 ' + mb(est.quota || 0) +
+    '　已快取 ' + cached + ' 筆卡片資料' +
     '　持久化：' + (persisted ? '已開啟' : '未開啟');
 }
 refreshStorage();
 
 $('btn-clear-cache').addEventListener('click', async () => {
-  if (!confirm('清除離線快取並重新載入？（不會刪掉你的照片或紀錄）')) return;
+  if (!confirm('清除離線快取與已查過的卡片資料，並重新載入？')) return;
+  await cacheClear();
   if (window.caches) {
     const keys = await caches.keys();
     await Promise.all(keys.map((k) => caches.delete(k)));
@@ -260,6 +265,9 @@ $('btn-install').addEventListener('click', async () => {
 if (window.matchMedia('(display-mode: standalone)').matches) {
   $('install-state').textContent = '已經是從主畫面開啟的。';
 }
+
+// 辨識查價是主要功能，開 App 就直接進那一頁
+initIdentify();
 
 // 註冊 Service Worker。用相對路徑，放到 GitHub Pages 子目錄才不會失效。
 if ('serviceWorker' in navigator) {
