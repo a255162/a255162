@@ -11,6 +11,10 @@ import {
   LANGS, getSets, getCard, searchByName, splitCardId, looksLikeCardId,
   imageUrl, getRates, toTWD, normalizePricing, marketLinks,
 } from './tcgdex.js';
+import { warp, imageDataToCanvas, CARD_W, CARD_H } from './imageutil.js';
+import { detectCardQuad } from './detect.js';
+import { matchFromPhoto, FP_BYTES } from './match.js';
+import { cacheGet, cacheSet } from './db.js';
 
 const $ = (id) => document.getElementById(id);
 const LANG_KEY = 'pokecard.lang';
@@ -24,7 +28,17 @@ const state = {
   lastQuery: '',
 };
 
-export function initIdentify() {
+// 指紋庫：拍照認卡用。每張卡 66 bytes，繁中全庫約 600KB。
+const fpDb = { lang: null, data: null, ids: null, names: null, loading: null };
+
+/** 相片與比對距離的判讀門檻。實測值：對齊良好時 <0.1，對不準時 0.14 上下。 */
+const MATCH_SURE = 0.13;      // 低於這個就算認得很有把握
+const MATCH_MAYBE = 0.22;     // 高於這個就明講不確定
+
+let host = {};   // app.js 傳進來的相機控制
+
+export function initIdentify(deps) {
+  host = deps || {};
   const sel = $('lang-select');
   sel.innerHTML = LANGS.map(
     (l) => '<option value="' + l.code + '">' + l.label + '</option>'
@@ -35,6 +49,8 @@ export function initIdentify() {
     localStorage.setItem(LANG_KEY, state.lang);
     state.sets = null;
     state.setMap = null;
+    fpDb.lang = null;   // 換語言就要換指紋庫
+    fpDb.data = null;
     await loadSets();
     if (state.lastQuery) doSearch(state.lastQuery);
   });
@@ -46,6 +62,9 @@ export function initIdentify() {
 
   $('btn-back-search').addEventListener('click', showSearch);
   $('set-go').addEventListener('click', goBySetNumber);
+
+  $('btn-scan').addEventListener('click', startScan);
+  $('btn-scan-again').addEventListener('click', startScan);
 
   loadSets();
   getRates().then((r) => {
@@ -317,4 +336,167 @@ function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// ===== 拍照認卡 =====
+
+/**
+ * 載入指紋庫。第一次要下載，之後存在 IndexedDB 離線也能用。
+ */
+async function loadFingerprints(lang) {
+  if (fpDb.lang === lang && fpDb.data) return fpDb;
+  if (fpDb.loading) return fpDb.loading;
+
+  fpDb.loading = (async () => {
+    const key = 'fp:' + lang;
+    const hit = await cacheGet(key);
+    if (hit && hit.value && hit.value.ids && hit.value.buf) {
+      fpDb.lang = lang;
+      fpDb.ids = hit.value.ids;
+      fpDb.names = hit.value.names;
+      fpDb.data = new Uint8Array(hit.value.buf);
+      fpDb.loading = null;
+      return fpDb;
+    }
+
+    const [metaRes, binRes] = await Promise.all([
+      fetch('./data/fp-' + lang + '.json'),
+      fetch('./data/fp-' + lang + '.bin'),
+    ]);
+    if (!metaRes.ok || !binRes.ok) {
+      fpDb.loading = null;
+      throw new Error('這個語言的指紋庫還沒建好');
+    }
+    const meta = await metaRes.json();
+    const buf = new Uint8Array(await binRes.arrayBuffer());
+    if (buf.length !== meta.count * FP_BYTES) {
+      fpDb.loading = null;
+      throw new Error('指紋庫大小不符，可能下載不完整');
+    }
+
+    fpDb.lang = lang;
+    fpDb.ids = meta.ids;
+    fpDb.names = meta.names;
+    fpDb.data = buf;
+    // 存進 IndexedDB（ArrayBuffer 可以直接存），下次離線也能認卡
+    await cacheSet(key, { ids: meta.ids, names: meta.names, buf: buf.buffer });
+    fpDb.loading = null;
+    return fpDb;
+  })();
+  return fpDb.loading;
+}
+
+function startScan() {
+  if (!host.openCamera) {
+    alert('相機還沒準備好');
+    return;
+  }
+  $('scan-result').hidden = true;
+  host.openCamera({
+    guide: true,
+    title: '把卡片對進框裡，填滿框、四邊對齊',
+    busyText: '辨識中…',
+    onShot: handleScanShot,
+    onFallback: () => {
+      alert('開不了相機。請確認已允許相機權限，且是用 https 網址開啟。');
+    },
+  });
+}
+
+/**
+ * 拍到照片之後：決定用哪個框 → 校正 → 比對 → 列出候選。
+ *
+ * 用哪個框很關鍵。實測結果：
+ *   - 自動偵測真卡：辨識率只有 81%（真卡的藝術圖會把找邊演算法騙進黃框內緣）
+ *   - 使用者對齊框：就算對歪 4%，辨識率 100%
+ * 所以以對齊框為準；只有在自動偵測「很有把握，而且結果跟對齊框差不多」時，
+ * 才採用它的框（它能修掉輕微的透視傾斜）。
+ */
+export async function handleScanShot(canvas, guideQuad) {
+  let db;
+  try {
+    db = await loadFingerprints(state.lang);
+  } catch (err) {
+    alert('讀不到指紋庫：' + err.message);
+    return;
+  }
+
+  let quad = guideQuad;
+  let usedDetection = false;
+  try {
+    const det = detectCardQuad(canvas);
+    if (det.confidence >= 0.75 && guideQuad && quadsSimilar(det.quad, guideQuad, canvas)) {
+      quad = det.quad;
+      usedDetection = true;
+    }
+  } catch (err) {
+    /* 偵測失敗就用對齊框，那本來就是主要依據 */
+  }
+  if (!quad) return;
+
+  const t0 = performance.now();
+  const matches = matchFromPhoto(canvas, quad, db, { warp, imageDataToCanvas }, 5);
+  const ms = Math.round(performance.now() - t0);
+  renderScanResult(canvas, quad, matches, { ms: ms, usedDetection: usedDetection });
+}
+
+/** 兩個四邊形是不是差不多（角點差距都在畫面短邊的 12% 以內）。 */
+function quadsSimilar(a, b, canvas) {
+  const tol = Math.min(canvas.width, canvas.height) * 0.12;
+  for (let i = 0; i < 4; i++) {
+    if (Math.hypot(a[i].x - b[i].x, a[i].y - b[i].y) > tol) return false;
+  }
+  return true;
+}
+
+function renderScanResult(canvas, quad, matches, info) {
+  const box = $('scan-result');
+  box.hidden = false;
+  $('search-results').innerHTML = '';
+  status('');
+
+  // 把校正後的卡片圖顯示出來，使用者一眼就知道有沒有對準
+  const imgData = warp(canvas, quad);
+  if (imgData) {
+    const std = imageDataToCanvas(imgData);
+    $('scan-shot').src = std.toDataURL('image/jpeg', 0.8);
+  }
+
+  const st = $('scan-status-text');
+  if (!matches.length) {
+    st.innerHTML = '<b>認不出來</b><br><small>指紋庫裡找不到相近的卡</small>';
+    $('scan-candidates').innerHTML = '';
+    return;
+  }
+
+  const best = matches[0];
+  const gap = matches[1] ? matches[1].distance - best.distance : 1;
+  let verdict;
+  if (best.distance <= MATCH_SURE && gap > 0.03) {
+    verdict = '<b class="ok-text">應該是這張</b>';
+  } else if (best.distance <= MATCH_MAYBE) {
+    verdict = '<b class="warn-textline">不太確定</b><br><small>請從下面挑對的那張</small>';
+  } else {
+    verdict = '<b class="warn-textline">很不確定</b><br><small>對齊框沒對準，或這張卡不在指紋庫裡。' +
+              '重拍一次，或改用卡名搜尋。</small>';
+  }
+  st.innerHTML = verdict + '<br><small>比對 ' + fpDb.ids.length.toLocaleString('zh-TW') +
+                 ' 張，' + info.ms + 'ms' + (info.usedDetection ? '・自動校正' : '') + '</small>';
+
+  $('scan-candidates').innerHTML = matches
+    .map((m, i) => {
+      const sim = Math.max(0, Math.round((1 - m.distance / 0.35) * 100));
+      return (
+        '<button class="result-row" data-id="' + esc(m.id) + '">' +
+        '<span class="rank">' + (i + 1) + '</span>' +
+        '<span class="result-text"><b>' + esc(m.name || m.id) + '</b>' +
+        '<small>' + esc(setName(m.id)) + '　' + esc(splitCardId(m.id).localId) +
+        '　相似度 ' + sim + '%</small></span></button>'
+      );
+    })
+    .join('');
+
+  $('scan-candidates').querySelectorAll('.result-row').forEach((b) => {
+    b.addEventListener('click', () => openCard(b.dataset.id));
+  });
 }

@@ -9,3 +9,7 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+
+# 指紋庫建置的中間快取（可用 tools/build_hashes.py 重建）
+.cache/
+.cache_build_*.log

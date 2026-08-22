@@ -351,30 +351,6 @@ table.measure td.ok { color: var(--green); }
 .link-row .btn { flex: 1 1 42%; text-decoration: none; line-height: 22px; }
 
 /* ===== 即時取景相機 ===== */
-.cam-wrap {
-  position: relative;
-  width: 100%;
-  height: 72vh;
-  border-radius: 14px;
-  overflow: hidden;
-  background: #000;
-  border: 1px solid var(--line);
-}
-.cam-wrap[hidden] { display: none; }
-.cam-wrap video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;   /* 疊圖的座標換算跟著 cover 走，兩邊要一致 */
-}
-.cam-wrap canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
 .cam-advice {
   position: absolute;
   left: 12px;
@@ -426,3 +402,73 @@ table.measure td.ok { color: var(--green); }
   background-clip: padding-box;
 }
 .cam-btn.shutter.ready { border-color: var(--green); }
+
+/* ===== 拍照認卡 ===== */
+.scan-btn { margin-bottom: 4px; }
+#scan-hint { margin-bottom: 16px; }
+
+.scan-head {
+  display: flex;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.scan-shot {
+  width: 84px;
+  height: 117px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--surface-2);
+  flex: 0 0 auto;
+}
+.scan-head-text { display: flex; flex-direction: column; gap: 8px; font-size: 14px; min-width: 0; }
+.scan-head-text small { color: var(--text-dim); font-size: 12px; }
+.scan-head-text .btn { margin-top: auto; padding: 8px 12px; min-height: 40px; font-size: 14px; }
+.ok-text { color: var(--green); }
+.warn-textline { color: var(--amber); }
+
+#scan-candidates .rank {
+  width: 26px;
+  flex: 0 0 auto;
+  text-align: center;
+  font-weight: 700;
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+/* 相機改成全螢幕：對齊框要看得清楚，畫面越大越好對 */
+.cam-full {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #000;
+}
+.cam-full[hidden] { display: none; }
+.cam-full video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cam-full canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.cam-title {
+  position: absolute;
+  left: 16px; right: 16px;
+  top: calc(var(--safe-top) + 16px);
+  text-align: center;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.8);
+}
+.cam-full .cam-advice { top: calc(var(--safe-top) + 52px); }

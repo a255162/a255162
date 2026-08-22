@@ -29,18 +29,6 @@
     <!-- 步驟 1：拍照 -->
     <div class="step active" id="step-capture">
 
-      <!-- 即時取景：會自己框卡片，穩定就自動拍 -->
-      <div class="cam-wrap" id="cam-wrap" hidden>
-        <video id="cam-video" playsinline muted autoplay></video>
-        <canvas id="cam-overlay"></canvas>
-        <div class="cam-advice" id="cam-advice"></div>
-        <div class="cam-bar">
-          <button class="cam-btn" id="btn-torch" title="補燈">💡</button>
-          <button class="cam-btn shutter" id="btn-shutter" title="拍照"></button>
-          <button class="cam-btn" id="btn-cam-close" title="關閉">✕</button>
-        </div>
-      </div>
-
       <div id="cam-idle">
         <div class="card">
           <h2>拍一張卡片正面</h2>
@@ -112,6 +100,22 @@
   <section class="panel active" id="panel-identify">
 
     <div id="search-view">
+      <button class="btn primary big scan-btn" id="btn-scan">
+        <span class="ico">📷</span> 拍照認卡
+      </button>
+      <p class="hint" id="scan-hint">把卡片對進畫面上的框就好。第一次使用要下載卡片指紋庫（約 600KB），之後離線也能認。</p>
+
+      <div id="scan-result" hidden>
+        <div class="scan-head">
+          <img id="scan-shot" class="scan-shot" alt="剛拍的卡片">
+          <div class="scan-head-text">
+            <div id="scan-status-text"></div>
+            <button class="btn" id="btn-scan-again">重拍</button>
+          </div>
+        </div>
+        <div class="result-list" id="scan-candidates"></div>
+      </div>
+
       <form class="search-bar" id="search-form">
         <select id="lang-select" aria-label="卡片語言"></select>
         <input type="search" id="search-input" placeholder="卡名或卡號" autocomplete="off" enterkeyhint="search">
@@ -199,6 +203,19 @@
   <button class="tab" data-tab="grade"><span>📐</span>量置中</button>
   <button class="tab" data-tab="settings"><span>⚙️</span>設定</button>
 </nav>
+
+<!-- 相機：辨識與量置中共用 -->
+<div class="cam-full" id="cam-wrap" hidden>
+  <video id="cam-video" playsinline muted autoplay></video>
+  <canvas id="cam-overlay"></canvas>
+  <div class="cam-advice" id="cam-advice"></div>
+  <div class="cam-title" id="cam-title"></div>
+  <div class="cam-bar">
+    <button class="cam-btn" id="btn-torch" title="補燈">💡</button>
+    <button class="cam-btn shutter" id="btn-shutter" title="拍照"></button>
+    <button class="cam-btn" id="btn-cam-close" title="關閉">✕</button>
+  </div>
+</div>
 
 <div class="overlay-busy" id="busy" hidden>
   <div class="spinner"></div>

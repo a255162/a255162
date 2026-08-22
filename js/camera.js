@@ -9,6 +9,7 @@
 // <input capture> 這條退路。
 
 import { detectCardQuad } from './detect.js';
+import { CARD_ASPECT } from './imageutil.js';
 
 const DETECT_INTERVAL = 260;   // 每隔多久跑一次偵測（毫秒）
 const STABLE_FRAMES = 4;       // 連續幾次框都差不多才算穩定
@@ -29,6 +30,7 @@ export class LiveCamera {
     this.onAutoShot = null;    // (canvas) => void
     this.autoShoot = true;
     this.torchOn = false;
+    this.showGuide = false;  // 認卡模式打開，量置中模式不需要
   }
 
   async start() {
@@ -159,6 +161,40 @@ export class LiveCamera {
     }
   }
 
+  /**
+   * 對齊框：畫面上固定的卡片形狀外框，使用者把卡片對進去。
+   *
+   * 為什麼需要它：實測真卡照片時，自動偵測的辨識率只有 81%——真卡的藝術圖
+   * 會把找邊的演算法騙進黃框內緣。但只要使用者把卡片對進框裡（就算歪個 4%），
+   * 辨識率是 100%。與其追求偵測完美，不如讓使用者花一秒鐘對準。
+   *
+   * 回傳的是「原始影像座標」的四個角，可以直接餵給 warp()。
+   */
+  getGuideQuad(frameW, frameH) {
+    const rect = this.overlay.getBoundingClientRect();
+    const dispW = rect.width || 1;
+    const dispH = rect.height || 1;
+    // video 是 object-fit: cover，畫面只看得到影像的一部分
+    const s = Math.max(dispW / frameW, dispH / frameH);
+    const visW = dispW / s;
+    const visH = dispH / s;
+
+    let gh = visH * 0.82;
+    let gw = gh * CARD_ASPECT;
+    if (gw > visW * 0.92) {
+      gw = visW * 0.92;
+      gh = gw / CARD_ASPECT;
+    }
+    const cx = frameW / 2;
+    const cy = frameH / 2;
+    return [
+      { x: cx - gw / 2, y: cy - gh / 2 },
+      { x: cx + gw / 2, y: cy - gh / 2 },
+      { x: cx + gw / 2, y: cy + gh / 2 },
+      { x: cx - gw / 2, y: cy + gh / 2 },
+    ];
+  }
+
   drawOverlay(det, frame) {
     const cv = this.overlay;
     const rect = cv.getBoundingClientRect();
@@ -168,14 +204,49 @@ export class LiveCamera {
     if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
     const ctx = cv.getContext('2d');
     ctx.clearRect(0, 0, w, h);
-    if (!det || det.confidence < 0.35) return;
 
     // video 以 object-fit: cover 顯示，畫面會被裁掉一部分，換算要跟著做
     const vw = frame.width, vh = frame.height;
     const scale = Math.max(w / vw, h / vh);
     const offX = (w - vw * scale) / 2;
     const offY = (h - vh * scale) / 2;
-    const pts = det.quad.map((p) => ({ x: p.x * scale + offX, y: p.y * scale + offY }));
+    const toDisp = (p) => ({ x: p.x * scale + offX, y: p.y * scale + offY });
+
+    // 對齊框：使用者把卡片對進這個框就好，這是最可靠的取景方式
+    if (this.showGuide) {
+      const g = this.getGuideQuad(vw, vh).map(toDisp);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, w, h);
+      ctx.moveTo(g[0].x, g[0].y);
+      for (let i = 3; i >= 1; i--) ctx.lineTo(g[i].x, g[i].y);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(6, 8, 14, 0.45)';
+      ctx.fill('evenodd');
+      ctx.restore();
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 2 * dpr;
+      ctx.setLineDash([]);
+      // 只畫四個角，中間留空比較不擋視線
+      const corner = Math.min(
+        Math.hypot(g[1].x - g[0].x, g[1].y - g[0].y),
+        Math.hypot(g[3].x - g[0].x, g[3].y - g[0].y)
+      ) * 0.18;
+      const seg = [[0,1],[1,2],[2,3],[3,0]];
+      for (const [a, b2] of seg) {
+        const A = g[a], B = g[b2];
+        const len = Math.hypot(B.x - A.x, B.y - A.y);
+        const ux = (B.x - A.x) / len, uy = (B.y - A.y) / len;
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y); ctx.lineTo(A.x + ux * corner, A.y + uy * corner);
+        ctx.moveTo(B.x, B.y); ctx.lineTo(B.x - ux * corner, B.y - uy * corner);
+        ctx.stroke();
+      }
+    }
+
+    if (!det || det.confidence < 0.35) return;
+    const pts = det.quad.map(toDisp);
 
     const good = det.confidence >= 0.7 && !det.suspectInner;
     ctx.strokeStyle = good ? '#2ecc96' : '#f0be28';

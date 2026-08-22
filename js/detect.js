@@ -402,6 +402,248 @@ function orderQuad(pts) {
 }
 
 /**
+ * 從卡片往外走，走到背景就是卡片的真實邊界。
+ *
+ * 為什麼需要這一步：前面所有找邊的方法都是在「找強邊」，但真卡的藝術圖本身
+ * 邊緣多又強，自適應門檻被拉高之後，卡片自己的外緣反而不算強邊——實測真卡
+ * 照片時四邊會一致往內縮 4~7%（剛好是黃框的寬度），指紋距離因此從 0.02
+ * 惡化到 0.15，辨識率只剩七成。
+ *
+ * 這個方法反過來利用「背景是均勻的」這個事實：不管卡面多複雜，只要從卡片
+ * 往外走遇到連續的背景色，那個位置就是邊界。跟卡片內容完全無關。
+ *
+ * @returns {{quad, hitRate}} 失敗時回傳原本的 quad 與 hitRate 0
+ */
+export function snapToBackground(srcCanvas, quad) {
+  const sctx = srcCanvas.getContext('2d', { willReadFrequently: true });
+  const sw = srcCanvas.width;
+  const sh = srcCanvas.height;
+  const sd = sctx.getImageData(0, 0, sw, sh).data;
+
+  // 背景色 = 影像最外圈的中位數（拍照時卡片不會頂到畫面邊緣）
+  const bg = borderFeatureMedian(sd, sw, sh);
+  if (!bg) return { quad: quad, hitRate: 0 };
+
+  const cx = (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4;
+  const cy = (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4;
+  const shortSide = Math.min(
+    dist(quad[0], quad[1]), dist(quad[1], quad[2]),
+    dist(quad[2], quad[3]), dist(quad[3], quad[0])
+  );
+  const maxOut = Math.max(10, Math.round(shortSide * 0.28));
+  const RUN = 4;        // 要連續幾格都是背景才算真的出界
+  const SAMPLES = 15;
+
+  const lines = [];
+  let hit = 0;
+  let total = 0;
+
+  for (let e = 0; e < 4; e++) {
+    const a = quad[e];
+    const b = quad[(e + 1) % 4];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 12) return { quad: quad, hitRate: 0 };
+    let nx = -(b.y - a.y) / len;
+    let ny = (b.x - a.x) / len;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    if ((cx - mx) * nx + (cy - my) * ny > 0) { nx = -nx; ny = -ny; }
+
+    const pts = [];
+    for (let s = 0; s < SAMPLES; s++) {
+      // 只取中間 70%，圓角附近的邊界本來就不是直線
+      const t = 0.15 + (0.7 * s) / (SAMPLES - 1);
+      const px = a.x + (b.x - a.x) * t;
+      const py = a.y + (b.y - a.y) * t;
+      total++;
+
+      // 從外面往內走，不是從裡面往外。
+      //
+      // 往外走的話，卡片內部的白色文字框在灰桌面上看起來就跟背景一樣，
+      // 第一步就誤判成「已經出界」。但卡片外面必定整片都是背景，
+      // 從外往內走遇到的第一個非背景像素，就一定是卡片的邊。
+      let run = 0;
+      let edgeAt = null;
+      for (let d = maxOut; d >= -Math.round(maxOut * 0.15); d--) {
+        const sx = Math.round(px + nx * d);
+        const sy = Math.round(py + ny * d);
+        if (sx < 0 || sy < 0 || sx >= sw || sy >= sh) { run = 0; continue; }
+        if (bgDistAt(sd, (sy * sw + sx) * 4, bg) > BG_TOL) {
+          run++;
+          if (run >= RUN) { edgeAt = d + RUN - 1; break; }
+        } else {
+          run = 0;
+        }
+      }
+      if (edgeAt !== null) {
+        pts.push({ x: px + nx * edgeAt, y: py + ny * edgeAt });
+        hit++;
+      }
+    }
+    if (pts.length < 6) return { quad: quad, hitRate: 0 };
+    lines.push(fitLineThrough(pts));
+  }
+
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    const p = intersectAB(lines[(i + 3) % 4], lines[i]);
+    if (!p) return { quad: quad, hitRate: 0 };
+    out.push({
+      x: Math.max(0, Math.min(sw, p.x)),
+      y: Math.max(0, Math.min(sh, p.y)),
+    });
+  }
+  return { quad: out, hitRate: total ? hit / total : 0 };
+}
+
+/**
+ * 直接用背景分割找卡片，不需要任何初始框。
+ *
+ * snapToBackground 是「相對於既有的框往外找」，初始框差太多（實測有差到 500px 的）
+ * 就救不回來。這個版本反過來：從畫面四個邊往內掃，第一個非背景像素就是卡片邊界。
+ * 卡片放在桌面上拍是絕大多數的情況，這時它比 Hough 可靠得多，
+ * 而且完全不受卡面圖案複雜度影響。
+ *
+ * @returns {{quad, coverage}|null}
+ */
+export function detectByBackground(srcCanvas) {
+  const wk = toWorking(srcCanvas, 300);
+  const bg = borderFeatureMedian(wk.d, wk.w, wk.h);
+  if (!bg) return null;
+
+  const w = wk.w, h = wk.h;
+  const mask = new Uint8Array(w * h);
+  let fg = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (bgDistAt(wk.d, (y * w + x) * 4, bg) > BG_TOL) {
+        mask[y * w + x] = 1;
+        fg++;
+      }
+    }
+  }
+  const coverage = fg / (w * h);
+  // 卡片應該佔畫面一定比例；太少表示背景跟卡片分不開，太多表示整片都被當成前景
+  if (coverage < 0.08 || coverage > 0.95) return null;
+
+  // 每一列／每一行的最外側前景點，就是卡片的四個邊
+  const top = [], bottom = [], left = [], right = [];
+  const xLo = Math.round(w * 0.15), xHi = Math.round(w * 0.85);
+  const yLo = Math.round(h * 0.15), yHi = Math.round(h * 0.85);
+
+  for (let x = xLo; x < xHi; x++) {
+    let t = -1, b2 = -1;
+    for (let y = 0; y < h; y++) if (mask[y * w + x]) { t = y; break; }
+    for (let y = h - 1; y >= 0; y--) if (mask[y * w + x]) { b2 = y; break; }
+    if (t >= 0) top.push({ x: x, y: t });
+    if (b2 >= 0) bottom.push({ x: x, y: b2 });
+  }
+  for (let y = yLo; y < yHi; y++) {
+    let l = -1, r = -1;
+    for (let x = 0; x < w; x++) if (mask[y * w + x]) { l = x; break; }
+    for (let x = w - 1; x >= 0; x--) if (mask[y * w + x]) { r = x; break; }
+    if (l >= 0) left.push({ x: l, y: y });
+    if (r >= 0) right.push({ x: r, y: y });
+  }
+  if (top.length < 20 || left.length < 20) return null;
+
+  // 穩健擬合：先擬一次，丟掉離群點再擬一次。桌上的雜物會產生離群的邊界點。
+  const fit = (pts) => {
+    let line = fitLineThrough(pts);
+    const res = pts.map((p) => Math.abs(line.a * p.x + line.b * p.y - line.c));
+    const m = median(res);
+    const spread = Math.max(1.5, median(res.map((v) => Math.abs(v - m))) * 3);
+    const kept = pts.filter((p, i) => Math.abs(res[i] - m) <= spread);
+    return kept.length >= 12 ? fitLineThrough(kept) : line;
+  };
+
+  const lt = fit(top), lb = fit(bottom), ll = fit(left), lr = fit(right);
+  const corners = [
+    intersectAB(ll, lt), intersectAB(lr, lt),
+    intersectAB(lr, lb), intersectAB(ll, lb),
+  ];
+  if (corners.some((c) => !c)) return null;
+
+  const quad = corners.map((p) => ({
+    x: Math.max(0, Math.min(srcCanvas.width, p.x * wk.kx)),
+    y: Math.max(0, Math.min(srcCanvas.height, p.y * wk.ky)),
+  }));
+  return { quad: quad, coverage: coverage };
+}
+
+const BG_TOL = 22;
+
+/**
+ * 跟背景的差距。以色度為主，亮度只給很小的權重且封頂——
+ * 這樣桌面上的影子（只有亮度改變）不會被誤判成「不是背景」而讓框變大。
+ */
+function bgDistAt(d, o, ref) {
+  const R = d[o], G = d[o + 1], B = d[o + 2];
+  const s = R + G + B + 1;
+  const cr = (R / s) * 255 - ref[0];
+  const cg = (G / s) * 255 - ref[1];
+  const lum = R * 0.299 + G * 0.587 + B * 0.114;
+  const dl = Math.min(Math.abs(lum - ref[2] / 0.3), 60) * 0.15;
+  return Math.sqrt(cr * cr + cg * cg) + dl;
+}
+
+/** 像素的色度＋有上限的亮度特徵，跟 grade.js 用的是同一套想法。 */
+function featAt(d, o) {
+  const R = d[o], G = d[o + 1], B = d[o + 2];
+  const s = R + G + B + 1;
+  return [
+    (R / s) * 255,
+    (G / s) * 255,
+    Math.min(R * 0.299 + G * 0.587 + B * 0.114, 200) * 0.3,
+  ];
+}
+
+function featDistAt(d, o, ref) {
+  const f = featAt(d, o);
+  const dr = f[0] - ref[0], dg = f[1] - ref[1], dl = f[2] - ref[2];
+  return Math.sqrt(dr * dr + dg * dg + dl * dl);
+}
+
+/** 影像最外圈一整圈的中位數特徵，當作背景色。 */
+function borderFeatureMedian(d, w, h) {
+  const a = [], b = [], c = [];
+  const step = Math.max(1, Math.round(Math.min(w, h) / 120));
+  const push = (x, y) => {
+    const f = featAt(d, (y * w + x) * 4);
+    a.push(f[0]); b.push(f[1]); c.push(f[2]);
+  };
+  for (let t = 0; t < 3; t++) {
+    for (let x = 0; x < w; x += step) { push(x, t); push(x, h - 1 - t); }
+    for (let y = 0; y < h; y += step) { push(t, y); push(w - 1 - t, y); }
+  }
+  if (!a.length) return null;
+  return [median(a), median(b), median(c)];
+}
+
+/** 總體最小平方法擬合直線，回傳 {a,b,c}（ax+by=c）。 */
+function fitLineThrough(pts) {
+  let mx = 0, my = 0;
+  for (const p of pts) { mx += p.x; my += p.y; }
+  mx /= pts.length; my /= pts.length;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (const p of pts) {
+    const dx = p.x - mx, dy = p.y - my;
+    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+  }
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const A = -Math.sin(theta), B = Math.cos(theta);
+  return { a: A, b: B, c: A * mx + B * my };
+}
+
+function intersectAB(l1, l2) {
+  const det = l1.a * l2.b - l2.a * l1.b;
+  if (Math.abs(det) < 1e-9) return null;
+  return {
+    x: (l1.c * l2.b - l2.c * l1.b) / det,
+    y: (l1.a * l2.c - l2.a * l1.c) / det,
+  };
+}
+
+/**
  * 主要入口：偵測卡片四角。
  *
  * @returns {{quad, confidence, method, support}}
@@ -445,6 +687,35 @@ export function detectCardQuad(srcCanvas, opts) {
         }
       }
     }
+  }
+
+  // 背景分割法：從畫面外側往內掃到第一個非背景像素。
+  // 卡片放在桌面上拍時這招最準，而且完全不受卡面圖案複雜度影響——
+  // 真卡的藝術圖會把 Hough 騙進內框，這個方法不會。
+  try {
+    if (!fast) {
+      const bgDet = detectByBackground(srcCanvas);
+      if (bgDet) {
+        const inWork = bgDet.quad.map((p) => ({ x: p.x / wk.kx, y: p.y / wk.ky }));
+        const plaus = quadPlausible(inWork, wk.w, wk.h);
+        if (plaus) {
+          const wAvg = (dist(inWork[0], inWork[1]) + dist(inWork[3], inWork[2])) / 2;
+          const hAvg = (dist(inWork[0], inWork[3]) + dist(inWork[1], inWork[2])) / 2;
+          candidates.push({
+            quad: inWork,
+            // 背景分割找的是卡片實體邊界，不靠梯度強度，所以給它固定的高支持度基準，
+            // 免得因為卡緣的梯度不夠強而輸給框在內框的候選
+            support: Math.max(0.9, edgeSupport(mag, wk.w, wk.h, inWork, thr)),
+            plaus: plaus,
+            area: wAvg * hAvg,
+            method: 'bg',
+            alreadyRefined: true,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    /* 背景分割失敗就靠其他候選 */
   }
 
   // 舊的顏色分割法也丟進來當候選。
@@ -493,7 +764,21 @@ export function detectCardQuad(srcCanvas, opts) {
   // 所以最高分的常常是藝術區的矩形而不是卡片本身——量出來的置中就會整個錯掉。
   // 卡片外框在幾何上必定包住藝術區，所以支持度接近時挑面積大的那個就對了。
   const top = score(candidates[0]);
-  const near = candidates.filter((c) => score(c) >= top - NEAR_TOL);
+  let near = candidates.filter((c) => score(c) >= top - NEAR_TOL);
+
+  // 「同分取面積大者」是為了修合成卡框到內框的問題，但它會讓一個錯得離譜的
+  // 大框贏過正確的框——實測真卡時就出現角點差 500px 還被選中的情況。
+  // 背景分割找的是卡片的實體邊界，可靠度最高，有它就以它的大小為準，
+  // 只允許在合理範圍內（±20%）比大小。
+  const bgCand = candidates.find((c) => c.method === 'bg');
+  if (bgCand) {
+    const lo = bgCand.area * 0.8;
+    const hi = bgCand.area * 1.2;
+    const within = near.filter((c) => c.area >= lo && c.area <= hi);
+    if (within.length) near = within;
+    else near = [bgCand];
+  }
+
   near.sort((a, b) => b.area - a.area);
   const best = near[0];
 
@@ -566,11 +851,30 @@ export function detectCardQuad(srcCanvas, opts) {
   let confidence = Math.max(0, Math.min(1, support));
   if (suspectInner) confidence = Math.min(confidence, 0.55);
 
+  // 最後一步：從卡片往外走到背景，把四邊貼到真正的卡片邊界。
+  // 前面所有步驟都是在卡面內部找強邊，真卡的圖案會把它們騙進去；
+  // 這一步只看「哪裡開始是桌面」，跟卡面複雜度無關，所以在真卡上特別可靠。
+  let snapped = false;
+  const snap = snapToBackground(srcCanvas, quad);
+  if (snap.hitRate >= 0.6) {
+    const inWork = snap.quad.map((p) => ({ x: p.x / wk.kx, y: p.y / wk.ky }));
+    if (quadPlausible(inWork, wk.w, wk.h)) {
+      quad = snap.quad;
+      workQuad = inWork;
+      support = Math.max(support, edgeSupport(mag, wk.w, wk.h, inWork, thr));
+      snapped = true;
+    }
+  }
+
+  const suspectInner2 = snapped ? false : suspectInner;
+  if (snapped) confidence = Math.max(confidence, Math.min(1, 0.6 + snap.hitRate * 0.4));
+
   return {
     quad: quad,
     confidence: confidence,
     support: support,
-    method: best.method + (corrected ? '+expand' : ''),
-    suspectInner: suspectInner,
+    method: best.method + (corrected ? '+expand' : '') + (snapped ? '+snap' : ''),
+    suspectInner: suspectInner2,
+    bgHitRate: snap.hitRate,
   };
 }

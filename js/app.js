@@ -35,7 +35,7 @@ function showTab(name) {
 document.querySelectorAll('.tab').forEach((b) => {
   b.addEventListener('click', () => {
     // 離開這一頁就關鏡頭，不然背景一直開著很耗電
-    if (b.dataset.tab !== 'grade') closeCamera();
+    closeCamera();
     showTab(b.dataset.tab);
   });
 });
@@ -97,15 +97,20 @@ $('file-input').addEventListener('change', async (e) => {
   }
 });
 
-// ===== 即時取景 =====
+// ===== 即時取景（辨識與量置中共用）=====
 let cam = null;
+let camMode = null;   // { guide, title, onShot }
 
-async function openCamera() {
+export async function openCamera(mode) {
+  camMode = mode || {};
   if (!cam) cam = new LiveCamera($('cam-video'), $('cam-overlay'));
+  cam.showGuide = !!camMode.guide;
+  // 對齊框模式不要自動快門——使用者正在對準，畫面本來就會晃
+  cam.autoShoot = !camMode.guide;
+  $('cam-title').textContent = camMode.title || '';
   try {
     const info = await cam.start();
     $('cam-wrap').hidden = false;
-    $('cam-idle').hidden = true;
     $('btn-torch').hidden = !info.torch;
 
     cam.onUpdate = (i) => {
@@ -130,47 +135,48 @@ async function openCamera() {
       shutter.classList.toggle('ready', !!i.ready);
     };
 
-    cam.onAutoShot = async (canvas) => {
-      closeCamera();
-      busy(true, '處理照片…');
-      await nextFrame();
-      try {
-        await useImage(canvas);
-      } finally {
-        busy(false);
-      }
-    };
+    cam.onAutoShot = (canvas) => shoot(canvas);
   } catch (err) {
     // HTTPS 之外的環境（區網 http）拿不到相機，退回系統相機
-    $('cam-fallback-note').textContent =
-      '開不了即時相機（' + err.message + '），改用系統相機拍。';
-    $('file-input').click();
+    const note = $('cam-fallback-note');
+    if (note) note.textContent = '開不了即時相機（' + err.message + '），改用系統相機拍。';
+    if (camMode.onFallback) camMode.onFallback(err);
+    else $('file-input').click();
   }
 }
 
-function closeCamera() {
+export function closeCamera() {
   if (cam) cam.stop();
   $('cam-wrap').hidden = true;
-  $('cam-idle').hidden = false;
   $('cam-advice').className = 'cam-advice';
 }
 
-$('btn-open-cam').addEventListener('click', openCamera);
-$('btn-cam-close').addEventListener('click', closeCamera);
-
-$('btn-shutter').addEventListener('click', async () => {
+/** 快門：把這一幀交給目前模式的處理函式。 */
+async function shoot(canvasFromAuto) {
   if (!cam) return;
-  const canvas = cam.grabFrame(2000);
+  const canvas = canvasFromAuto || cam.grabFrame(2000);
   if (!canvas) return;
+  // 對齊框的座標要在關掉相機前算，關掉後版面尺寸就沒了
+  const guide = cam.showGuide ? cam.getGuideQuad(canvas.width, canvas.height) : null;
+  const handler = camMode && camMode.onShot;
   closeCamera();
-  busy(true, '處理照片…');
+  busy(true, camMode && camMode.busyText ? camMode.busyText : '處理照片…');
   await nextFrame();
   try {
-    await useImage(canvas);
+    if (handler) await handler(canvas, guide);
+    else await useImage(canvas);
+  } catch (err) {
+    alert('處理失敗：' + err.message);
   } finally {
     busy(false);
   }
-});
+}
+
+$('btn-open-cam').addEventListener('click', () =>
+  openCamera({ guide: false, title: '讓整張卡入鏡，程式會自動框' })
+);
+$('btn-cam-close').addEventListener('click', closeCamera);
+$('btn-shutter').addEventListener('click', () => shoot(null));
 
 $('btn-torch').addEventListener('click', async () => {
   if (!cam) return;
@@ -209,13 +215,13 @@ $('btn-auto').addEventListener('click', () => {
 
 $('btn-redo').addEventListener('click', () => {
   showStep('step-capture');
-  openCamera();
+  openCamera({ guide: false, title: '讓整張卡入鏡，程式會自動框' });
 });
 
 $('btn-back-adjust').addEventListener('click', () => showStep('step-adjust'));
 $('btn-new').addEventListener('click', () => {
   showStep('step-capture');
-  openCamera();
+  openCamera({ guide: false, title: '讓整張卡入鏡，程式會自動框' });
 });
 
 // ===== 分析 =====
@@ -372,7 +378,7 @@ if (window.matchMedia('(display-mode: standalone)').matches) {
 }
 
 // 辨識查價是主要功能，開 App 就直接進那一頁
-initIdentify();
+initIdentify({ openCamera: openCamera, closeCamera: closeCamera, busy: busy });
 
 // 註冊 Service Worker。用相對路徑，放到 GitHub Pages 子目錄才不會失效。
 if ('serviceWorker' in navigator) {
